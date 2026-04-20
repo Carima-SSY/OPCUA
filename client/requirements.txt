@@ -1,0 +1,7 @@
+# OPC UA 클라이언트
+asyncua>=1.0.0
+cryptography>=41.0.0
+
+# 웹 UI (FastAPI + WebSocket)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
