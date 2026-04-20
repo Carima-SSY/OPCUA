@@ -1,0 +1,9 @@
+# OPC UA 서버 런타임 의존성
+asyncua>=1.0.0          # OPC UA 비동기 라이브러리
+cryptography>=41.0.0    # 인증서 생성 및 TLS 암호화
+
+# Windows 전용 (서비스 등록·제어)
+pywin32>=306            # Windows Service API (win32serviceutil 등)
+
+# 빌드 전용 (exe 빌드 시에만 필요, 런타임 불필요)
+# pyinstaller>=6.0.0
