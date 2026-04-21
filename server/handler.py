@@ -19,12 +19,17 @@ TCP 메시지 핸들러 (handler.py)
   - 연결 종료 시 writer 를 안전하게 닫고 루프 종료
 """
 
+from __future__ import annotations
+
 import asyncio
-import GitConn.OPCUA.server.opc_server as opc_server
+from typing import TYPE_CHECKING
 from asyncua import ua
 
+if TYPE_CHECKING:
+    from opc_server import OPC_Server
 
-async def tcp_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, opc_server: opc_server.OPC_Server):
+
+async def tcp_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, opc_server: OPC_Server):
     """
     장비(DM400)와의 TCP 연결을 처리하는 비동기 핸들러.
 

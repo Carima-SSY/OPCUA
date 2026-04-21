@@ -15,9 +15,8 @@ OPC UA 서버 핵심 모듈 (opc_server.py)
 from asyncua import Server, ua, Node
 
 import asyncio
-import GitConn.OPCUA.server.tcp_server as tcp_server
-import GitConn.OPCUA.server.handler as handler
-import GitConn.OPCUA.server.gen_certs as gen_certs
+import tcp_server
+import gen_certs
 
 # ── 서버 엔드포인트 / 식별자 상수 ───────────────────────────────────────────
 # OPC UA 클라이언트가 접속할 URL. 0.0.0.0 으로 모든 인터페이스 바인딩
@@ -302,6 +301,8 @@ async def main():
       4. OPC UA 서버 컨텍스트 진입 (클라이언트 접속 수락 시작)
       5. TCP 내부 서버 시작 — 장비 데이터 수신 루프 진입
     """
+    import handler
+
     # 인증서를 비동기 루프 시작 전에 동기 함수로 확인·생성한다.
     # RSA 키 생성은 최대 1초 이내로 완료되므로 이벤트 루프 블로킹 허용 범위.
     gen_certs.ensure_server_certs()

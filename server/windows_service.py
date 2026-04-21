@@ -49,16 +49,16 @@ class OpcUaService(win32serviceutil.ServiceFramework):
             server_dir = os.path.dirname(sys.executable)
         else:
             server_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.abspath(os.path.join(server_dir, '..', '..', '..'))
-            if project_root not in sys.path:
-                sys.path.insert(0, project_root)
+
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
 
         os.chdir(server_dir)
 
         try:
-            from GitConn.OPCUA.server import opc_server
+            import opc_server
 
-            self._loop = asyncio.new_event_loop()
+            self._loop = asyncio.SelectorEventLoop()
             asyncio.set_event_loop(self._loop)
             logging.info("OPC UA 서버 시작")
 
