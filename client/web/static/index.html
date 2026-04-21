@@ -3,153 +3,124 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OPC UA 모니터링 대시보드</title>
-  <link rel="stylesheet" href="/static/css/style.css" />
+  <title>OPC UA 모니터링</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=3" />
 </head>
 <body>
-  <div class="layout">
 
-    <!-- ── 좌측 사이드바 ───────────────────────────────────────────────── -->
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <div class="logo">
-          <span class="logo-icon">◈</span>
-          <span class="logo-text">OPC UA Monitor</span>
-        </div>
-        <button class="btn btn--sm btn--primary" id="btnAddServer">+ 서버 추가</button>
+  <!-- ── 상단 헤더 ── -->
+  <header class="app-header">
+    <div class="header-logo">
+      <span class="logo-icon">◈</span>
+      <span class="logo-text">OPC UA Monitor</span>
+    </div>
+    <div class="header-actions">
+      <span id="wsStatus" class="badge badge--ws">WebSocket 연결 중...</span>
+      <button class="btn btn--primary btn--sm" id="btnAddServer">+ 장비 추가</button>
+    </div>
+  </header>
+
+  <!-- ── 뷰: 장비 목록 ── -->
+  <div id="viewList" class="view">
+    <div class="view-bar">
+      <h1 class="view-title">연결된 장비</h1>
+      <span id="deviceCount" class="count-chip">0</span>
+    </div>
+    <div id="deviceGrid" class="device-grid">
+      <div id="noDevicesHint" class="empty-state">
+        <div class="empty-icon">◈</div>
+        <p class="empty-title">연결된 장비가 없습니다</p>
+        <p class="empty-sub">위의 '+ 장비 추가' 버튼으로 OPC UA 서버에 연결하세요.</p>
       </div>
-
-      <!-- 연결 설정 폼 (기본 숨김, 토글로 표시) -->
-      <section class="panel hidden" id="connectPanel">
-        <h2 class="panel-title">새 서버 연결</h2>
-        <form id="connectForm" autocomplete="off">
-
-          <div class="field">
-            <label class="field-label">서버 엔드포인트</label>
-            <input class="field-input" type="text" id="endpoint"
-                   placeholder="opc.tcp://localhost:4840/..." />
-          </div>
-
-          <div class="field">
-            <label class="field-label">인증 방식</label>
-            <select class="field-input" id="authMode">
-              <option value="anonymous">Anonymous (익명)</option>
-              <option value="username">Username / Password</option>
-              <option value="certificate">X.509 Certificate</option>
-            </select>
-          </div>
-
-          <!-- Username / Password -->
-          <div id="credGroup" class="hidden">
-            <div class="field">
-              <label class="field-label">사용자 이름</label>
-              <input class="field-input" type="text" id="username" placeholder="admin" />
-            </div>
-            <div class="field">
-              <label class="field-label">비밀번호</label>
-              <input class="field-input" type="password" id="password" placeholder="••••••••" />
-            </div>
-          </div>
-
-          <div class="field">
-            <label class="field-label">채널 보안 정책</label>
-            <select class="field-input" id="securityMode">
-              <option value="none">NoSecurity (암호화 없음)</option>
-              <option value="sign_encrypt">Basic256Sha256 / SignAndEncrypt</option>
-            </select>
-          </div>
-
-          <!-- 인증서 경로 -->
-          <div id="certGroup" class="hidden">
-            <div class="field-divider">인증서 경로 <span class="hint">(비워두면 기본값 사용)</span></div>
-            <div class="field">
-              <label class="field-label">클라이언트 인증서 (PEM)</label>
-              <input class="field-input field-input--mono" type="text" id="clientCert" />
-            </div>
-            <div class="field">
-              <label class="field-label">클라이언트 개인키 (PEM)</label>
-              <input class="field-input field-input--mono" type="text" id="clientKey" />
-            </div>
-            <div class="field">
-              <label class="field-label">서버 인증서 (PEM)</label>
-              <input class="field-input field-input--mono" type="text" id="serverCert" />
-            </div>
-          </div>
-
-          <div class="form-actions">
-            <button class="btn btn--primary" type="submit" id="connectBtn">연결</button>
-            <button class="btn btn--secondary" type="button" id="cancelBtn">취소</button>
-          </div>
-
-          <div id="errorBox" class="error-box hidden"></div>
-        </form>
-      </section>
-
-      <!-- 연결된 서버 목록 + 노드 트리 -->
-      <div id="serverList" class="server-list">
-        <p class="placeholder" id="noServersHint">연결된 서버가 없습니다.</p>
-      </div>
-    </aside>
-
-    <!-- ── 우측 메인 영역 ─────────────────────────────────────────────── -->
-    <main class="main">
-      <header class="main-header">
-        <h1 class="main-title">실시간 노드 값</h1>
-        <div class="header-meta">
-          <span id="updateCounter" class="update-counter">업데이트: 0</span>
-          <span id="wsStatus" class="badge badge--ws">WebSocket 연결 중...</span>
-        </div>
-      </header>
-
-      <!-- 통계 카드 -->
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-label">연결된 서버</div>
-          <div class="stat-value" id="statServers">0</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">전체 노드</div>
-          <div class="stat-value" id="statNodeCount">0</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">마지막 업데이트</div>
-          <div class="stat-value stat-value--sm" id="statLastUpdate">—</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">총 수신 횟수</div>
-          <div class="stat-value" id="statTotalUpdates">0</div>
-        </div>
-      </div>
-
-      <!-- 데이터 테이블 -->
-      <div class="table-wrapper">
-        <table class="data-table" id="dataTable">
-          <thead>
-            <tr>
-              <th>서버</th>
-              <th>노드 이름</th>
-              <th>현재 값</th>
-              <th>마지막 업데이트</th>
-              <th>변경 횟수</th>
-            </tr>
-          </thead>
-          <tbody id="dataTableBody">
-            <tr data-empty="1">
-              <td colspan="5" class="table-empty">연결 후 데이터가 표시됩니다.</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </main>
-
+    </div>
   </div>
 
-  <!-- 연결 중 오버레이 -->
+  <!-- ── 뷰: 장비 상세 ── -->
+  <div id="viewDetail" class="view hidden">
+    <div class="view-bar">
+      <button class="btn-back" id="btnBack">← 목록</button>
+      <h1 class="view-title" id="detailTitle">장비 상세</h1>
+      <button class="btn btn--danger btn--sm" id="btnDetailDisc">연결 해제</button>
+    </div>
+    <div id="detailContent" class="detail-content"></div>
+  </div>
+
+  <!-- ── 모달: 연결 폼 ── -->
+  <div id="connectModal" class="modal hidden">
+    <div class="modal-backdrop" id="modalBackdrop"></div>
+    <div class="modal-card">
+      <div class="modal-header">
+        <span class="modal-title">새 장비 연결</span>
+        <button class="btn-modal-close" id="btnModalClose">×</button>
+      </div>
+      <form id="connectForm" autocomplete="off">
+
+        <div class="field">
+          <label class="field-label">서버 엔드포인트</label>
+          <input class="field-input" type="text" id="endpoint"
+                 placeholder="opc.tcp://192.168.1.10:4840/..." />
+        </div>
+
+        <div class="field">
+          <label class="field-label">인증 방식</label>
+          <select class="field-input" id="authMode">
+            <option value="anonymous">Anonymous (익명)</option>
+            <option value="username">Username / Password</option>
+            <option value="certificate">X.509 Certificate</option>
+          </select>
+        </div>
+
+        <div id="credGroup" class="hidden">
+          <div class="field">
+            <label class="field-label">사용자 이름</label>
+            <input class="field-input" type="text" id="username" placeholder="admin" />
+          </div>
+          <div class="field">
+            <label class="field-label">비밀번호</label>
+            <input class="field-input" type="password" id="password" placeholder="••••••••" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label">채널 보안 정책</label>
+          <select class="field-input" id="securityMode">
+            <option value="none">NoSecurity (암호화 없음)</option>
+            <option value="sign_encrypt">Basic256Sha256 / SignAndEncrypt</option>
+          </select>
+        </div>
+
+        <div id="certGroup" class="hidden">
+          <div class="field-divider">인증서 경로 <span class="hint">(비워두면 기본값 사용)</span></div>
+          <div class="field">
+            <label class="field-label">클라이언트 인증서 (PEM)</label>
+            <input class="field-input field-input--mono" type="text" id="clientCert" />
+          </div>
+          <div class="field">
+            <label class="field-label">클라이언트 개인키 (PEM)</label>
+            <input class="field-input field-input--mono" type="text" id="clientKey" />
+          </div>
+          <div class="field">
+            <label class="field-label">서버 인증서 (PEM)</label>
+            <input class="field-input field-input--mono" type="text" id="serverCert" />
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn--primary" type="submit" id="connectBtn">연결</button>
+          <button class="btn btn--secondary" type="button" id="cancelBtn">취소</button>
+        </div>
+
+        <div id="errorBox" class="error-box hidden"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── 로딩 오버레이 ── -->
   <div class="overlay hidden" id="loadingOverlay">
     <div class="spinner"></div>
     <p class="overlay-text">서버에 연결 중...</p>
   </div>
 
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/app.js?v=3"></script>
 </body>
 </html>

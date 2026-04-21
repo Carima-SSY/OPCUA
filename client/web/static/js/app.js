@@ -1,42 +1,48 @@
-/**
- * OPC UA 모니터링 대시보드 — 프론트엔드 (app.js)
- *
- * 다수의 OPC UA 서버에 동시 연결하고, 각 서버의 노드 트리와
- * 실시간 값을 통합 대시보드에 표시한다.
- *
- * 모듈 구조:
- *   State  — 연결된 서버 Map, 총 수신 횟수 등 앱 전역 상태
- *   WS     — WebSocket 연결·재연결·메시지 라우팅
- *   API    — REST API 호출 (connect, disconnect, defaults)
- *   Tree   — 사이드바 서버 섹션 및 노드 트리 렌더링
- *   Table  — 데이터 테이블 행 생성·갱신
- *   Stats  — 상단 통계 카드 업데이트
- *   Form   — 연결 폼 토글·입력·제출 처리
- */
-
 'use strict';
 
-/* ── 상태 ─────────────────────────────────────────────────────────────────── */
-
+/* ═══════════════════════════════════════════════════════════════
+   State  — 앱 전역 상태
+   servers: Map<server_id, {
+     endpoint, tree, nodeMap(id→name), nameToId(name→id), values(id→{value,ts})
+   }>
+═══════════════════════════════════════════════════════════════ */
 const State = {
-  // Map<server_id, { endpoint: string, nodeMap: {node_id → name} }>
-  servers:      new Map(),
-  totalUpdates: 0,
-  lastUpdate:   null,
-  // `${server_id}:${node_id}` → 변경 횟수
-  updateCounts: {},
+  servers:          new Map(),
+  totalUpdates:     0,
+  lastUpdate:       null,
+  updateCounts:     {},
+  currentView:      'list',   // 'list' | 'detail'
+  selectedServerId: null,
 };
 
-/* ── 유틸 ─────────────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   유틸리티
+═══════════════════════════════════════════════════════════════ */
 
 function el(id) { return document.getElementById(id); }
 
-function fmtValue(val) {
-  if (val === null || val === undefined) return '—';
-  if (typeof val === 'number') return Number.isInteger(val) ? String(val) : val.toFixed(4);
-  return String(val);
+// "opc.tcp://host:port/path" → "host:port"
+function shortEp(ep) {
+  return ep.replace(/^opc\.tcp:\/\//, '').split('/')[0];
 }
 
+// seconds → "HH:MM:SS"
+function fmtDuration(secs) {
+  if (secs == null || isNaN(Number(secs))) return '—';
+  const s = Math.max(0, Math.floor(Number(secs)));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+}
+
+// Unix timestamp (seconds) → localized string
+function fmtUnixTime(unix) {
+  if (!unix || Number(unix) === 0) return '—';
+  return new Date(Number(unix) * 1000).toLocaleString('ko-KR', { hour12: false });
+}
+
+// 타임스탬프 ISO → 시:분:초.밀리초
 function fmtTime(isoStr) {
   if (!isoStr) return '—';
   const d = new Date(isoStr);
@@ -44,87 +50,129 @@ function fmtTime(isoStr) {
          '.' + String(d.getMilliseconds()).padStart(3, '0');
 }
 
-function flash(element) {
-  element.classList.remove('flash');
-  void element.offsetWidth;  // reflow 로 애니메이션 재시작
-  element.classList.add('flash');
-  setTimeout(() => element.classList.remove('flash'), 600);
+function flash(elem) {
+  if (!elem) return;
+  elem.classList.remove('flash');
+  void elem.offsetWidth;
+  elem.classList.add('flash');
+  setTimeout(() => elem.classList.remove('flash'), 600);
 }
 
-// "opc.tcp://host:4840/path" → "host:4840"
-function shortEp(endpoint) {
-  return endpoint.replace(/^opc\.tcp:\/\//, '').split('/')[0];
+// format 에 따라 값을 문자열로 변환
+function fmtField(format, value, unit = '') {
+  if (value === null || value === undefined) return '—';
+  let display;
+  switch (format) {
+    case 'float':    display = typeof value === 'number' ? value.toFixed(2) : String(value); break;
+    case 'number':   display = String(Math.floor(Number(value))); break;
+    case 'duration': display = fmtDuration(value); break;
+    case 'unixtime': display = fmtUnixTime(value); break;
+    default:         display = String(value);
+  }
+  return unit ? `${display} ${unit}` : display;
 }
 
-// ID 속성에 안전하게 사용할 수 있는 키 생성 (공백 제거)
-function rowKey(server_id, node_id) {
-  return `${server_id}-${String(node_id).replace(/\s+/g, '_')}`;
+// 트리에서 Variable 이름 → node_id 맵 생성 (재귀)
+function buildNameToId(nodes, result = {}) {
+  nodes.forEach(n => {
+    if (n.class === 'Variable') result[n.name] = String(n.node_id);
+    if (n.children?.length)    buildNameToId(n.children, result);
+  });
+  return result;
 }
 
-/* ── WebSocket ────────────────────────────────────────────────────────────── */
+// 트리에서 node_id → 이름 맵 생성 (재귀)
+function buildNodeMap(nodes, result = {}) {
+  nodes.forEach(n => {
+    if (n.class === 'Variable') result[String(n.node_id)] = n.name;
+    if (n.children?.length)    buildNodeMap(n.children, result);
+  });
+  return result;
+}
 
+// 서버의 특정 이름 노드 값을 반환
+function getNodeValue(serverId, nodeName) {
+  const srv = State.servers.get(serverId);
+  if (!srv) return null;
+  const nodeId = srv.nameToId[nodeName];
+  if (nodeId == null) return null;
+  return srv.values[nodeId]?.value ?? null;
+}
+
+// State 정수 + StateText → CSS 클래스
+function getStateClass(state, stateText) {
+  if (Number(state) === 0) return 'state--idle';
+  const t = String(stateText || '').toLowerCase();
+  if (t.includes('error') || t.includes('fail') || t.includes('오류')) return 'state--error';
+  if (t.includes('complet') || t.includes('done') || t.includes('finish') || t.includes('완료')) return 'state--complete';
+  return 'state--active';
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   WebSocket
+═══════════════════════════════════════════════════════════════ */
 const WS = {
   URL: `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`,
-  _ws:            null,
-  _pingInterval:  null,
-  _reconnTimer:   null,
+  _ws: null, _ping: null, _timer: null,
 
   connect() {
-    clearTimeout(this._reconnTimer);
-    try {
-      this._ws = new WebSocket(this.URL);
-    } catch {
-      this._scheduleReconnect();
-      return;
-    }
+    clearTimeout(this._timer);
+    try { this._ws = new WebSocket(this.URL); } catch { this._retry(); return; }
 
     this._ws.onopen = () => {
       el('wsStatus').textContent = 'WebSocket 연결됨';
       el('wsStatus').className = 'badge badge--ws connected';
-      // keep-alive ping 매 20초
-      this._pingInterval = setInterval(() => {
+      this._ping = setInterval(() => {
         if (this._ws?.readyState === WebSocket.OPEN) this._ws.send('ping');
       }, 20_000);
     };
 
-    this._ws.onmessage = (e) => this._handleMessage(e);
-
-    this._ws.onclose = () => {
-      clearInterval(this._pingInterval);
+    this._ws.onmessage = e => this._handle(e);
+    this._ws.onclose   = () => {
+      clearInterval(this._ping);
       el('wsStatus').textContent = 'WebSocket 끊김 — 재연결 중...';
       el('wsStatus').className = 'badge badge--ws error';
-      this._scheduleReconnect();
+      this._retry();
     };
-
-    this._ws.onerror = () => { this._ws.close(); };
+    this._ws.onerror = () => this._ws.close();
   },
 
-  _scheduleReconnect() {
-    this._reconnTimer = setTimeout(() => this.connect(), 3_000);
-  },
+  _retry() { this._timer = setTimeout(() => this.connect(), 3_000); },
 
-  _handleMessage(event) {
+  _handle(event) {
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
 
-    if (msg.type === 'data_change') {
-      const { server_id, node_id, value, timestamp } = msg;
-      const key = `${server_id}:${node_id}`;
-      State.totalUpdates += 1;
-      State.lastUpdate = timestamp;
-      State.updateCounts[key] = (State.updateCounts[key] ?? 0) + 1;
+    if (msg.type !== 'data_change') return;
 
-      Tree.updateValue(server_id, node_id, value);
-      Table.updateRow(server_id, node_id, value, timestamp);
-      Stats.update();
-    } else if (msg.type === 'status_change') {
-      console.info('[OPC]', msg.server_id, '구독 상태 변경:', msg.status);
+    const { server_id, node_id, value, timestamp } = msg;
+    const nodeIdStr = String(node_id);
+
+    State.totalUpdates++;
+    State.lastUpdate = timestamp;
+    const key = `${server_id}:${nodeIdStr}`;
+    State.updateCounts[key] = (State.updateCounts[key] ?? 0) + 1;
+
+    // 값 캐시 갱신
+    const srv = State.servers.get(server_id);
+    if (!srv) return;
+    srv.values[nodeIdStr] = { value, timestamp };
+    const nodeName = srv.nodeMap[nodeIdStr];
+
+    // 뷰별 라우팅
+    if (State.currentView === 'list') {
+      DeviceList.handleValueChange(server_id, nodeName);
+    } else if (State.currentView === 'detail' && State.selectedServerId === server_id) {
+      DeviceDetail.updateField(server_id, nodeIdStr, value, nodeName);
     }
+
+    Stats.update();
   },
 };
 
-/* ── REST API ─────────────────────────────────────────────────────────────── */
-
+/* ═══════════════════════════════════════════════════════════════
+   REST API
+═══════════════════════════════════════════════════════════════ */
 const API = {
   async _call(method, path, body) {
     const opts = {
@@ -150,253 +198,318 @@ const API = {
     } catch { /* 기본값 유지 */ }
   },
 
-  connect:    (payload)  => API._call('POST', '/api/connect', payload),
-  disconnect: (sid)      => API._call('POST', `/api/disconnect/${sid}`),
+  connect:    payload => API._call('POST', '/api/connect', payload),
+  disconnect: sid     => API._call('POST', `/api/disconnect/${sid}`),
+  servers:    ()      => API._call('GET',  '/api/servers'),
 };
 
-/* ── 노드 트리 ────────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   Router — 뷰 전환
+═══════════════════════════════════════════════════════════════ */
+const Router = {
+  showList() {
+    el('viewDetail').classList.add('hidden');
+    el('viewList').classList.remove('hidden');
+    State.currentView      = 'list';
+    State.selectedServerId = null;
+  },
 
-const Tree = {
-  /** 사이드바에 서버 섹션(헤더 + 노드 트리)을 추가한다. */
-  addServer(server_id, endpoint, nodes) {
-    // 빈 상태 힌트 제거
-    el('noServersHint')?.remove();
+  showDetail(serverId) {
+    el('viewList').classList.add('hidden');
+    el('viewDetail').classList.remove('hidden');
+    State.currentView      = 'detail';
+    State.selectedServerId = serverId;
+    DeviceDetail.render(serverId);
+  },
+};
 
-    const section = document.createElement('div');
-    section.className = 'server-section';
-    section.id = `ss-${server_id}`;
+/* ═══════════════════════════════════════════════════════════════
+   DeviceList — 장비 목록 카드
+═══════════════════════════════════════════════════════════════ */
+const DeviceList = {
+  // 카드 업데이트가 필요한 노드 이름 집합
+  CARD_NODES: new Set(['State', 'StateText', 'Progress', 'CurrentLayer', 'TotalLayers', 'Model', 'Manufacturer']),
 
-    section.innerHTML = `
-      <div class="server-section-header">
-        <span class="server-dot"></span>
-        <div class="server-info">
-          <span class="server-id-label">${server_id}</span>
-          <span class="server-ep-label" title="${endpoint}">${shortEp(endpoint)}</span>
-        </div>
-        <button class="btn-server-disc" title="연결 해제">×</button>
+  addCard(serverId) {
+    el('noDevicesHint')?.remove();
+
+    const srv  = State.servers.get(serverId);
+    const card = document.createElement('div');
+    card.className = 'device-card';
+    card.id        = `dc-${serverId}`;
+
+    card.innerHTML = `
+      <div class="card-header">
+        <span class="card-status-dot state--idle"></span>
+        <span class="card-endpoint" title="${srv.endpoint}">${shortEp(srv.endpoint)}</span>
+        <button class="btn-card-disc" title="연결 해제">×</button>
       </div>
-      <div class="server-tree-wrap"></div>
+      <div class="card-body">
+        <div class="card-device-name">—</div>
+        <div class="card-device-maker">—</div>
+        <div class="card-state-badge state--idle">—</div>
+        <div class="card-progress hidden">
+          <div class="card-progress-track">
+            <div class="card-progress-fill" style="width:0%"></div>
+          </div>
+          <div class="card-progress-bottom">
+            <span class="card-progress-pct">0%</span>
+          </div>
+        </div>
+        <div class="card-layer-info hidden"></div>
+      </div>
     `;
 
-    section.querySelector('.btn-server-disc').addEventListener('click', () => {
-      Form.handleDisconnect(server_id);
+    card.querySelector('.btn-card-disc').addEventListener('click', e => {
+      e.stopPropagation();
+      Form.handleDisconnect(serverId);
     });
+    card.addEventListener('click', () => Router.showDetail(serverId));
 
-    const treeWrap = section.querySelector('.server-tree-wrap');
-    nodes.forEach(n => treeWrap.appendChild(this._buildItem(n, server_id)));
-
-    el('serverList').appendChild(section);
+    el('deviceGrid').appendChild(card);
+    this._refreshCard(serverId);
+    Stats.update();
   },
 
-  /** 서버 섹션을 사이드바에서 제거하고 빈 상태 힌트를 복원한다. */
-  removeServer(server_id) {
-    el(`ss-${server_id}`)?.remove();
-    if (!el('serverList').querySelector('.server-section')) {
-      const hint = document.createElement('p');
-      hint.className = 'placeholder';
-      hint.id = 'noServersHint';
-      hint.textContent = '연결된 서버가 없습니다.';
-      el('serverList').appendChild(hint);
+  removeCard(serverId) {
+    el(`dc-${serverId}`)?.remove();
+    if (!el('deviceGrid').querySelector('.device-card')) {
+      const hint = document.createElement('div');
+      hint.id        = 'noDevicesHint';
+      hint.className = 'empty-state';
+      hint.innerHTML = `
+        <div class="empty-icon">◈</div>
+        <p class="empty-title">연결된 장비가 없습니다</p>
+        <p class="empty-sub">위의 '+ 장비 추가' 버튼으로 OPC UA 서버에 연결하세요.</p>
+      `;
+      el('deviceGrid').appendChild(hint);
     }
+    Stats.update();
   },
 
-  _buildItem(node, server_id) {
-    const wrapper = document.createElement('div');
-    wrapper.className = `tree-item tree-item--${node.class}`;
+  handleValueChange(serverId, nodeName) {
+    if (!this.CARD_NODES.has(nodeName)) return;
+    this._refreshCard(serverId);
+  },
 
-    const row = document.createElement('div');
-    row.className = 'tree-row';
+  _refreshCard(serverId) {
+    const card = el(`dc-${serverId}`);
+    if (!card) return;
 
-    const icon = document.createElement('span');
-    icon.className = 'tree-icon';
-    icon.textContent = { Object: '▶', Variable: '◆', Method: '⚡' }[node.class] ?? '·';
+    const stateVal    = getNodeValue(serverId, 'State');
+    const stateText   = String(getNodeValue(serverId, 'StateText') ?? '—');
+    const progress    = Math.max(0, Math.min(100, Number(getNodeValue(serverId, 'Progress') ?? 0)));
+    const curLayer    = getNodeValue(serverId, 'CurrentLayer');
+    const totLayer    = getNodeValue(serverId, 'TotalLayers');
+    const model       = String(getNodeValue(serverId, 'Model')        ?? '—');
+    const maker       = String(getNodeValue(serverId, 'Manufacturer') ?? '—');
+    const stateClass  = getStateClass(stateVal, stateText);
 
-    const name = document.createElement('span');
-    name.className = 'tree-name';
-    name.title = node.node_id_full;
-    name.textContent = node.name;
+    card.querySelector('.card-status-dot').className  = `card-status-dot ${stateClass}`;
+    card.querySelector('.card-device-name').textContent = model;
+    card.querySelector('.card-device-maker').textContent = maker;
 
-    row.appendChild(icon);
-    row.appendChild(name);
+    const badge = card.querySelector('.card-state-badge');
+    badge.textContent = stateText;
+    badge.className   = `card-state-badge ${stateClass}`;
 
-    if (node.class === 'Variable') {
-      const valSpan = document.createElement('span');
-      valSpan.className = 'tree-val';
-      valSpan.id = `tv-${rowKey(server_id, node.node_id)}`;
-      valSpan.textContent = fmtValue(node.value);
-      row.appendChild(valSpan);
-    }
-
-    wrapper.appendChild(row);
-
-    if (node.children?.length) {
-      const toggle = document.createElement('button');
-      toggle.className = 'tree-toggle open';
-      toggle.textContent = '▶';
-      row.insertBefore(toggle, icon);
-
-      const childWrap = document.createElement('div');
-      childWrap.className = 'tree-children';
-      node.children.forEach(c => childWrap.appendChild(this._buildItem(c, server_id)));
-      wrapper.appendChild(childWrap);
-
-      toggle.addEventListener('click', () => {
-        childWrap.classList.toggle('collapsed');
-        toggle.classList.toggle('open', !childWrap.classList.contains('collapsed'));
-      });
-      icon.style.cursor = 'pointer';
-      icon.addEventListener('click', () => toggle.click());
+    const progWrap = card.querySelector('.card-progress');
+    if (progress > 0) {
+      progWrap.classList.remove('hidden');
+      card.querySelector('.card-progress-fill').style.width = `${progress}%`;
+      card.querySelector('.card-progress-pct').textContent  = `${progress}%`;
+    } else {
+      progWrap.classList.add('hidden');
     }
 
-    return wrapper;
-  },
-
-  /** 트리 내 Variable 노드 값 뱃지를 갱신한다. */
-  updateValue(server_id, node_id, value) {
-    const span = el(`tv-${rowKey(server_id, node_id)}`);
-    if (!span) return;
-    span.textContent = fmtValue(value);
-    flash(span);
-  },
-
-  /** 노드 트리에서 Variable 노드의 node_id → name 맵을 구성한다 (재귀). */
-  buildNodeMap(nodes) {
-    const map = {};
-    function walk(ns) {
-      ns.forEach(n => {
-        if (n.class === 'Variable') map[String(n.node_id)] = n.name;
-        if (n.children?.length) walk(n.children);
-      });
-    }
-    walk(nodes);
-    return map;
-  },
-};
-
-/* ── 데이터 테이블 ────────────────────────────────────────────────────────── */
-
-const Table = {
-  /** 서버의 모든 Variable 노드를 테이블에 행으로 추가한다. */
-  addServer(server_id, endpoint, nodeMap, tree) {
-    // 빈 상태 행 제거
-    el('dataTableBody').querySelector('[data-empty]')?.remove();
-
-    const ep = shortEp(endpoint);
-
-    function addRows(nodes) {
-      nodes.forEach(n => {
-        if (n.class === 'Variable') {
-          const tr = document.createElement('tr');
-          const key = rowKey(server_id, n.node_id);
-          tr.id = `tr-${key}`;
-          tr.innerHTML = `
-            <td><span class="ep-badge" title="${endpoint}">${ep}</span></td>
-            <td class="cell-name">${nodeMap[String(n.node_id)] ?? n.node_id}</td>
-            <td><span class="cell-value" id="tv-table-${key}">${fmtValue(n.value)}</span></td>
-            <td class="cell-ts">—</td>
-            <td class="cell-count">0</td>
-          `;
-          el('dataTableBody').appendChild(tr);
-        }
-        if (n.children?.length) addRows(n.children);
-      });
-    }
-    addRows(tree);
-  },
-
-  /** 서버 연결 해제 시 해당 서버의 모든 행을 제거한다. */
-  removeServer(server_id) {
-    el('dataTableBody')
-      .querySelectorAll(`[id^="tr-${server_id}-"]`)
-      .forEach(r => r.remove());
-
-    // 모든 행이 제거되면 빈 상태 행 복원
-    if (!el('dataTableBody').querySelector('tr:not([data-empty])')) {
-      const tr = document.createElement('tr');
-      tr.setAttribute('data-empty', '1');
-      tr.innerHTML = '<td colspan="5" class="table-empty">연결 후 데이터가 표시됩니다.</td>';
-      el('dataTableBody').appendChild(tr);
-    }
-  },
-
-  /** 데이터 변경 수신 시 해당 행의 값·타임스탬프·변경 횟수를 갱신한다. */
-  updateRow(server_id, node_id, value, timestamp) {
-    const key = rowKey(server_id, node_id);
-    const cell = el(`tv-table-${key}`);
-    if (!cell) return;
-    cell.textContent = fmtValue(value);
-    flash(cell);
-
-    const tr = el(`tr-${key}`);
-    if (tr) {
-      tr.querySelector('.cell-ts').textContent =
-        fmtTime(timestamp);
-      tr.querySelector('.cell-count').textContent =
-        String(State.updateCounts[`${server_id}:${node_id}`] ?? 0);
+    const layerElem = card.querySelector('.card-layer-info');
+    if (curLayer != null && totLayer != null) {
+      layerElem.textContent = `레이어 ${curLayer} / ${totLayer}`;
+      layerElem.classList.remove('hidden');
+    } else {
+      layerElem.classList.add('hidden');
     }
   },
 };
 
-/* ── 통계 카드 ────────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   DeviceDetail — 장비 상세 화면
+═══════════════════════════════════════════════════════════════ */
+const DeviceDetail = {
+  render(serverId) {
+    const srv = State.servers.get(serverId);
+    if (!srv) return;
 
+    el('detailTitle').textContent = shortEp(srv.endpoint);
+    el('btnDetailDisc').onclick   = () => Form.handleDisconnect(serverId);
+
+    const stateVal  = getNodeValue(serverId, 'State');
+    const stateText = String(getNodeValue(serverId, 'StateText') ?? '—');
+    const stateClass = getStateClass(stateVal, stateText);
+    const progress  = Math.max(0, Math.min(100, Number(getNodeValue(serverId, 'Progress') ?? 0)));
+    const curLayer  = getNodeValue(serverId, 'CurrentLayer');
+    const totLayer  = getNodeValue(serverId, 'TotalLayers');
+    const layerTxt  = curLayer != null ? `레이어 ${curLayer} / ${totLayer}` : '';
+
+    el('detailContent').innerHTML = `
+      <!-- 장비 식별 -->
+      <div class="detail-section">
+        <div class="detail-section-title">장비 식별</div>
+        <div class="detail-fields-grid">
+          ${this._field(serverId, 'Manufacturer', '제조사',       'text')}
+          ${this._field(serverId, 'Model',        '모델',         'text')}
+          ${this._field(serverId, 'SerialNumber', '시리얼 번호',  'text')}
+        </div>
+      </div>
+
+      <!-- 작업 상태 -->
+      <div class="detail-section">
+        <div class="detail-section-title">작업 상태</div>
+        <div class="detail-status-row">
+          <span class="status-badge ${stateClass}" id="dsi-${serverId}">
+            <span class="status-dot"></span>
+            <span id="dsi-text-${serverId}">${stateText}</span>
+          </span>
+        </div>
+        <div class="detail-progress-row">
+          <div class="progress-track">
+            <div class="progress-fill" id="dp-fill-${serverId}" style="width:${progress}%"></div>
+          </div>
+          <span class="progress-pct"    id="dp-pct-${serverId}">${progress}%</span>
+          <span class="progress-layers" id="dp-layers-${serverId}">${layerTxt}</span>
+        </div>
+        <div class="detail-fields-grid">
+          ${this._field(serverId, 'BuildJob',       '작업명',       'text')}
+          ${this._field(serverId, 'CurrentLayer',   '현재 레이어',  'number')}
+          ${this._field(serverId, 'TotalLayers',    '전체 레이어',  'number')}
+          ${this._field(serverId, 'RemainingTime',  '남은 시간',    'duration')}
+          ${this._field(serverId, 'TotalBuildTime', '총 빌드 시간', 'duration')}
+          ${this._field(serverId, 'StartTime',      '시작 시각',    'unixtime')}
+          ${this._field(serverId, 'EndTime',        '종료 시각',    'unixtime')}
+        </div>
+      </div>
+
+      <!-- 센서 -->
+      <div class="detail-section">
+        <div class="detail-section-title">센서</div>
+        <div class="detail-fields-grid">
+          ${this._field(serverId, 'BuildPlatformZPosition', '플랫폼 Z위치',   'float', 'mm')}
+          ${this._field(serverId, 'LevelTankZPosition',     '탱크 Z위치',     'float', 'mm')}
+          ${this._field(serverId, 'BladeState',             '블레이드 상태',  'number')}
+          ${this._field(serverId, 'CollectBladeState',      '수집 블레이드',  'number')}
+          ${this._field(serverId, 'PrintBladeState',        '출력 블레이드',  'number')}
+          ${this._field(serverId, 'ResinTemp',              '레진 온도',      'float', '°C')}
+          ${this._field(serverId, 'ResinLevel',             '레진 수위',      'float')}
+          ${this._field(serverId, 'ResinLevelStablity',     '수위 안정도',    'float')}
+          ${this._field(serverId, 'VatPres',                '배트 압력',      'float')}
+          ${this._field(serverId, 'UVLTemp',                'UV 좌측 온도',   'float', '°C')}
+          ${this._field(serverId, 'UVRTemp',                'UV 우측 온도',   'float', '°C')}
+        </div>
+      </div>
+    `;
+  },
+
+  // WebSocket 값 변경 시 해당 필드만 갱신
+  updateField(serverId, _nodeId, value, nodeName) {
+    if (!nodeName) return;
+
+    // 일반 필드 갱신
+    const fieldElem = el(`df-${serverId}-${nodeName}`);
+    if (fieldElem) {
+      fieldElem.textContent = fmtField(fieldElem.dataset.format, value, fieldElem.dataset.unit || '');
+      flash(fieldElem);
+    }
+
+    // 상태 배지 갱신
+    if (nodeName === 'State' || nodeName === 'StateText') {
+      const stateVal   = getNodeValue(serverId, 'State');
+      const stateText  = String(getNodeValue(serverId, 'StateText') ?? '—');
+      const stateClass = getStateClass(stateVal, stateText);
+      const badge      = el(`dsi-${serverId}`);
+      const textElem   = el(`dsi-text-${serverId}`);
+      if (badge)    badge.className   = `status-badge ${stateClass}`;
+      if (textElem) textElem.textContent = stateText;
+    }
+
+    // 진행률 갱신
+    if (nodeName === 'Progress') {
+      const pct = Math.max(0, Math.min(100, Number(value) || 0));
+      const fill = el(`dp-fill-${serverId}`);
+      const pctE = el(`dp-pct-${serverId}`);
+      if (fill) fill.style.width   = `${pct}%`;
+      if (pctE) pctE.textContent   = `${pct}%`;
+    }
+
+    // 레이어 정보 갱신
+    if (nodeName === 'CurrentLayer' || nodeName === 'TotalLayers') {
+      const cur   = getNodeValue(serverId, 'CurrentLayer');
+      const tot   = getNodeValue(serverId, 'TotalLayers');
+      const layE  = el(`dp-layers-${serverId}`);
+      if (layE) layE.textContent = cur != null ? `레이어 ${cur} / ${tot}` : '';
+    }
+  },
+
+  // 단일 상세 필드 HTML 생성
+  _field(serverId, nodeName, label, format, unit = '') {
+    const srv    = State.servers.get(serverId);
+    const nodeId = srv?.nameToId[nodeName];
+    const raw    = nodeId != null ? (srv.values[nodeId]?.value ?? null) : null;
+    return `
+      <div class="detail-field">
+        <div class="detail-field-label">${label}</div>
+        <div class="detail-field-value"
+             id="df-${serverId}-${nodeName}"
+             data-format="${format}"
+             data-unit="${unit}">${fmtField(format, raw, unit)}</div>
+      </div>`;
+  },
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   Stats — 헤더 장비 수 뱃지 갱신
+═══════════════════════════════════════════════════════════════ */
 const Stats = {
   update() {
-    let totalNodes = 0;
-    for (const { nodeMap } of State.servers.values()) {
-      totalNodes += Object.keys(nodeMap).length;
-    }
-    el('statServers').textContent      = String(State.servers.size);
-    el('statNodeCount').textContent    = String(totalNodes);
-    el('statLastUpdate').textContent   = fmtTime(State.lastUpdate);
-    el('statTotalUpdates').textContent = String(State.totalUpdates);
-    el('updateCounter').textContent    = `업데이트: ${State.totalUpdates}`;
+    el('deviceCount').textContent = String(State.servers.size);
   },
 };
 
-/* ── 연결 폼 ──────────────────────────────────────────────────────────────── */
-
+/* ═══════════════════════════════════════════════════════════════
+   Form — 연결 모달 + 연결/해제 처리
+═══════════════════════════════════════════════════════════════ */
 const Form = {
   init() {
-    el('btnAddServer').addEventListener('click', () => this._togglePanel());
-    el('cancelBtn').addEventListener('click',    () => this._hidePanel());
-    el('authMode').addEventListener('change',    () => this._syncVisibility());
-    el('securityMode').addEventListener('change',() => this._syncVisibility());
-    el('connectForm').addEventListener('submit', (e) => {
-      e.preventDefault();
-      this._handleConnect();
-    });
-    this._syncVisibility();
+    el('btnAddServer').addEventListener('click',  () => this.show());
+    el('cancelBtn').addEventListener('click',     () => this.hide());
+    el('btnModalClose').addEventListener('click', () => this.hide());
+    el('modalBackdrop').addEventListener('click', () => this.hide());
+    el('btnBack').addEventListener('click',       () => Router.showList());
+    el('authMode').addEventListener('change',     () => this._syncVis());
+    el('securityMode').addEventListener('change', () => this._syncVis());
+    el('connectForm').addEventListener('submit',  e  => { e.preventDefault(); this._connect(); });
+    this._syncVis();
   },
 
-  _togglePanel() {
-    el('connectPanel').classList.contains('hidden')
-      ? this._showPanel()
-      : this._hidePanel();
+  show() {
+    el('connectModal').classList.remove('hidden');
+    el('endpoint').focus();
   },
 
-  _showPanel() {
-    el('connectPanel').classList.remove('hidden');
-    el('btnAddServer').textContent = '▲ 접기';
-  },
-
-  _hidePanel() {
-    el('connectPanel').classList.add('hidden');
-    el('btnAddServer').textContent = '+ 서버 추가';
+  hide() {
+    el('connectModal').classList.add('hidden');
     el('errorBox').classList.add('hidden');
   },
 
-  _syncVisibility() {
+  _syncVis() {
     const auth = el('authMode').value;
     const sec  = el('securityMode').value;
     el('credGroup').classList.toggle('hidden', auth !== 'username');
-    el('certGroup').classList.toggle('hidden',
-      auth !== 'certificate' && sec !== 'sign_encrypt'
-    );
+    el('certGroup').classList.toggle('hidden', auth !== 'certificate' && sec !== 'sign_encrypt');
   },
 
-  async _handleConnect() {
+  async _connect() {
     const btn = el('connectBtn');
-    btn.disabled = true;
+    btn.disabled    = true;
     btn.textContent = '연결 중...';
     el('errorBox').classList.add('hidden');
     el('loadingOverlay').classList.remove('hidden');
@@ -406,14 +519,11 @@ const Form = {
       auth_mode:     el('authMode').value,
       security_mode: el('securityMode').value,
     };
-
     if (payload.auth_mode === 'username') {
       payload.username = el('username').value.trim();
       payload.password = el('password').value;
     }
-
-    const needCert = payload.auth_mode === 'certificate' ||
-                     payload.security_mode === 'sign_encrypt';
+    const needCert = payload.auth_mode === 'certificate' || payload.security_mode === 'sign_encrypt';
     if (needCert) {
       const cc = el('clientCert').value.trim();
       const ck = el('clientKey').value.trim();
@@ -425,49 +535,76 @@ const Form = {
 
     try {
       const res = await API.connect(payload);
-      // res: { status, server_id, node_count, tree }
-
-      const nodeMap = Tree.buildNodeMap(res.tree ?? []);
-      State.servers.set(res.server_id, { endpoint: payload.endpoint, nodeMap });
-
-      Tree.addServer(res.server_id, payload.endpoint, res.tree ?? []);
-      Table.addServer(res.server_id, payload.endpoint, nodeMap, res.tree ?? []);
-      Stats.update();
-      this._hidePanel();
+      // res: { server_id, node_count, tree }
+      this._registerServer(res.server_id, payload.endpoint, res.tree ?? [], res.values ?? {});
+      this.hide();
     } catch (err) {
-      const box = el('errorBox');
-      box.textContent = err.message ?? '알 수 없는 오류';
-      box.classList.remove('hidden');
+      el('errorBox').textContent = err.message ?? '알 수 없는 오류';
+      el('errorBox').classList.remove('hidden');
     } finally {
-      btn.disabled = false;
+      btn.disabled    = false;
       btn.textContent = '연결';
       el('loadingOverlay').classList.add('hidden');
     }
   },
 
-  /** 사이드바 × 버튼에서 호출 — 특정 서버 연결 해제 */
-  async handleDisconnect(server_id) {
-    try {
-      await API.disconnect(server_id);
-    } catch { /* 이미 끊긴 경우 무시 */ }
+  _registerServer(serverId, endpoint, tree, externalValues = {}) {
+    const nodeMap  = buildNodeMap(tree);
+    const nameToId = buildNameToId(tree);
 
-    // 해당 서버의 updateCounts 정리
-    for (const key of Object.keys(State.updateCounts)) {
-      if (key.startsWith(`${server_id}:`)) delete State.updateCounts[key];
+    // 트리 노드의 인라인 value 로 초기값 구성
+    const values = {};
+    const now = new Date().toISOString();
+    (function extractValues(nodes) {
+      nodes.forEach(n => {
+        if (n.class === 'Variable' && n.value !== null && n.value !== undefined) {
+          values[String(n.node_id)] = { value: n.value, timestamp: now };
+        }
+        if (n.children?.length) extractValues(n.children);
+      });
+    })(tree);
+
+    // /api/servers 에서 온 최신 값으로 덮어씌움
+    Object.assign(values, externalValues);
+
+    State.servers.set(serverId, { endpoint, tree, nodeMap, nameToId, values });
+    DeviceList.addCard(serverId);
+  },
+
+  async handleDisconnect(serverId) {
+    try { await API.disconnect(serverId); } catch { /* 이미 끊긴 경우 무시 */ }
+
+    // updateCounts 정리
+    for (const k of Object.keys(State.updateCounts)) {
+      if (k.startsWith(`${serverId}:`)) delete State.updateCounts[k];
     }
 
-    State.servers.delete(server_id);
-    Tree.removeServer(server_id);
-    Table.removeServer(server_id);
+    // 상세 뷰에서 이 서버를 보고 있었다면 목록으로 복귀
+    if (State.selectedServerId === serverId) {
+      Router.showList();
+    }
+
+    State.servers.delete(serverId);
+    DeviceList.removeCard(serverId);
     Stats.update();
   },
 };
 
-/* ── 초기화 ─────────────────────────────────────────────────────────────────  */
-
+/* ═══════════════════════════════════════════════════════════════
+   초기화
+═══════════════════════════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', async () => {
   WS.connect();
   Form.init();
-  Stats.update();
   await API.loadDefaults();
+
+  // 이미 연결된 서버 복원 (페이지 새로고침 시)
+  try {
+    const { servers } = await API.servers();
+    for (const s of servers) {
+      Form._registerServer(s.server_id, s.endpoint, s.tree ?? [], s.values ?? {});
+    }
+  } catch { /* 연결 없거나 오류 → 무시 */ }
+
+  Stats.update();
 });

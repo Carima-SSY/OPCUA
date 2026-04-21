@@ -90,6 +90,8 @@ async def servers():
                 "server_id":  sid,
                 "endpoint":   s.endpoint,
                 "node_count": len(s.node_values),
+                "tree":       s.node_tree,
+                "values":     s.node_values,
             }
             for sid, s in opc_state.sessions.items()
         ]
