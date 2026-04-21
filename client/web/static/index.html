@@ -16,12 +16,12 @@
           <span class="logo-icon">◈</span>
           <span class="logo-text">OPC UA Monitor</span>
         </div>
-        <span class="badge badge--disconnected" id="statusBadge">연결 안됨</span>
+        <button class="btn btn--sm btn--primary" id="btnAddServer">+ 서버 추가</button>
       </div>
 
-      <!-- 연결 설정 폼 -->
-      <section class="panel" id="connectPanel">
-        <h2 class="panel-title">연결 설정</h2>
+      <!-- 연결 설정 폼 (기본 숨김, 토글로 표시) -->
+      <section class="panel hidden" id="connectPanel">
+        <h2 class="panel-title">새 서버 연결</h2>
         <form id="connectForm" autocomplete="off">
 
           <div class="field">
@@ -59,45 +59,36 @@
             </select>
           </div>
 
-          <!-- 인증서 경로 (SignAndEncrypt 또는 Certificate 시 표시) -->
+          <!-- 인증서 경로 -->
           <div id="certGroup" class="hidden">
             <div class="field-divider">인증서 경로 <span class="hint">(비워두면 기본값 사용)</span></div>
             <div class="field">
               <label class="field-label">클라이언트 인증서 (PEM)</label>
-              <input class="field-input field-input--mono" type="text" id="clientCert"
-                     placeholder="server/certs/client_cert.pem" />
+              <input class="field-input field-input--mono" type="text" id="clientCert" />
             </div>
             <div class="field">
               <label class="field-label">클라이언트 개인키 (PEM)</label>
-              <input class="field-input field-input--mono" type="text" id="clientKey"
-                     placeholder="server/certs/client_key.pem" />
+              <input class="field-input field-input--mono" type="text" id="clientKey" />
             </div>
             <div class="field">
               <label class="field-label">서버 인증서 (PEM)</label>
-              <input class="field-input field-input--mono" type="text" id="serverCert"
-                     placeholder="server/certs/server_cert.pem" />
+              <input class="field-input field-input--mono" type="text" id="serverCert" />
             </div>
           </div>
 
           <div class="form-actions">
             <button class="btn btn--primary" type="submit" id="connectBtn">연결</button>
-            <button class="btn btn--danger"  type="button" id="disconnectBtn" disabled>연결 해제</button>
+            <button class="btn btn--secondary" type="button" id="cancelBtn">취소</button>
           </div>
 
           <div id="errorBox" class="error-box hidden"></div>
         </form>
       </section>
 
-      <!-- 노드 트리 -->
-      <section class="panel panel--tree">
-        <h2 class="panel-title">
-          노드 트리
-          <span class="tree-count" id="treeCount"></span>
-        </h2>
-        <div class="node-tree" id="nodeTree">
-          <p class="placeholder">서버에 연결하면 노드 트리가 표시됩니다.</p>
-        </div>
-      </section>
+      <!-- 연결된 서버 목록 + 노드 트리 -->
+      <div id="serverList" class="server-list">
+        <p class="placeholder" id="noServersHint">연결된 서버가 없습니다.</p>
+      </div>
     </aside>
 
     <!-- ── 우측 메인 영역 ─────────────────────────────────────────────── -->
@@ -111,14 +102,14 @@
       </header>
 
       <!-- 통계 카드 -->
-      <div class="stats-grid" id="statsGrid">
+      <div class="stats-grid">
         <div class="stat-card">
-          <div class="stat-label">연결 상태</div>
-          <div class="stat-value" id="statConnected">—</div>
+          <div class="stat-label">연결된 서버</div>
+          <div class="stat-value" id="statServers">0</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label">구독 노드 수</div>
-          <div class="stat-value" id="statNodeCount">—</div>
+          <div class="stat-label">전체 노드</div>
+          <div class="stat-value" id="statNodeCount">0</div>
         </div>
         <div class="stat-card">
           <div class="stat-label">마지막 업데이트</div>
@@ -126,7 +117,7 @@
         </div>
         <div class="stat-card">
           <div class="stat-label">총 수신 횟수</div>
-          <div class="stat-value" id="statTotalUpdates">—</div>
+          <div class="stat-value" id="statTotalUpdates">0</div>
         </div>
       </div>
 
@@ -135,15 +126,15 @@
         <table class="data-table" id="dataTable">
           <thead>
             <tr>
-              <th>노드 ID</th>
-              <th>이름</th>
+              <th>서버</th>
+              <th>노드 이름</th>
               <th>현재 값</th>
               <th>마지막 업데이트</th>
               <th>변경 횟수</th>
             </tr>
           </thead>
           <tbody id="dataTableBody">
-            <tr>
+            <tr data-empty="1">
               <td colspan="5" class="table-empty">연결 후 데이터가 표시됩니다.</td>
             </tr>
           </tbody>

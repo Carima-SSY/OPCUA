@@ -1,12 +1,12 @@
 """
 REST API 엔드포인트 (routes.py)
 
-/api/connect    POST  — OPC UA 서버 연결
-/api/disconnect POST  — 연결 해제
-/api/status     GET   — 연결 상태 조회
-/api/nodes      GET   — 노드 트리 반환
-/api/values     GET   — 현재 노드 값 전체 반환
-/api/defaults   GET   — 기본 설정값 반환 (프론트엔드 폼 초기화용)
+/api/connect             POST  — OPC UA 서버 연결 (server_id 반환)
+/api/disconnect/{sid}    POST  — 특정 서버 연결 해제
+/api/servers             GET   — 연결된 서버 목록
+/api/values              GET   — 전체 서버 노드 값 (server_id 별 그룹)
+/api/values/{sid}        GET   — 특정 서버 노드 값
+/api/defaults            GET   — 기본 설정값 반환
 """
 
 import logging
@@ -44,7 +44,7 @@ class ConnectRequest(BaseModel):
 
 @router.post("/connect")
 async def connect(req: ConnectRequest):
-    """OPC UA 서버에 연결하고 노드 트리를 반환한다."""
+    """OPC UA 서버에 연결하고 server_id 와 노드 트리를 반환한다."""
     try:
         auth_mode     = AuthMode(req.auth_mode)
         security_mode = SecurityMode(req.security_mode)
@@ -56,16 +56,11 @@ async def connect(req: ConnectRequest):
         "auth_mode":     auth_mode,
         "security_mode": security_mode,
     }
-    if req.username:
-        config["username"] = req.username
-    if req.password:
-        config["password"] = req.password
-    if req.client_cert:
-        config["client_cert"] = Path(req.client_cert)
-    if req.client_key:
-        config["client_key"] = Path(req.client_key)
-    if req.server_cert:
-        config["server_cert"] = Path(req.server_cert)
+    if req.username:    config["username"]    = req.username
+    if req.password:    config["password"]    = req.password
+    if req.client_cert: config["client_cert"] = Path(req.client_cert)
+    if req.client_key:  config["client_key"]  = Path(req.client_key)
+    if req.server_cert: config["server_cert"] = Path(req.server_cert)
 
     try:
         result = await opc_state.connect(config)
@@ -77,36 +72,46 @@ async def connect(req: ConnectRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/disconnect")
-async def disconnect():
-    """OPC UA 연결을 해제한다."""
-    await opc_state.disconnect()
-    return {"status": "disconnected"}
+@router.post("/disconnect/{server_id}")
+async def disconnect(server_id: str):
+    """특정 서버 연결을 해제한다."""
+    if server_id not in opc_state.sessions:
+        raise HTTPException(status_code=404, detail="서버를 찾을 수 없습니다.")
+    await opc_state.disconnect(server_id)
+    return {"status": "disconnected", "server_id": server_id}
 
 
-@router.get("/status")
-async def status():
-    """현재 연결 상태와 구독 노드 수를 반환한다."""
+@router.get("/servers")
+async def servers():
+    """연결된 모든 서버 목록을 반환한다."""
     return {
-        "connected":  opc_state.connected,
-        "node_count": len(opc_state.node_values),
+        "servers": [
+            {
+                "server_id":  sid,
+                "endpoint":   s.endpoint,
+                "node_count": len(s.node_values),
+            }
+            for sid, s in opc_state.sessions.items()
+        ]
     }
-
-
-@router.get("/nodes")
-async def nodes():
-    """노드 트리를 반환한다 (연결 후에만 유효)."""
-    if not opc_state.connected:
-        raise HTTPException(status_code=400, detail="서버에 연결되어 있지 않습니다.")
-    return {"tree": opc_state.node_tree}
 
 
 @router.get("/values")
 async def values():
-    """구독 중인 모든 Variable 노드의 현재 값을 반환한다."""
-    if not opc_state.connected:
-        raise HTTPException(status_code=400, detail="서버에 연결되어 있지 않습니다.")
-    return opc_state.node_values
+    """모든 서버의 현재 노드 값을 server_id 로 그룹화하여 반환한다."""
+    return {
+        sid: s.node_values
+        for sid, s in opc_state.sessions.items()
+    }
+
+
+@router.get("/values/{server_id}")
+async def values_by_server(server_id: str):
+    """특정 서버의 현재 노드 값을 반환한다."""
+    session = opc_state.sessions.get(server_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="서버를 찾을 수 없습니다.")
+    return session.node_values
 
 
 @router.get("/defaults")

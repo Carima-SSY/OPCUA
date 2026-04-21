@@ -41,9 +41,8 @@ _STATIC_DIR = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     yield
-    # 앱 종료 시 OPC UA 연결 정리
-    if opc_state.connected:
-        await opc_state.disconnect()
+    # 앱 종료 시 모든 OPC UA 연결 정리
+    await opc_state.disconnect_all()
 
 
 # ── FastAPI 앱 ────────────────────────────────────────────────────────────────

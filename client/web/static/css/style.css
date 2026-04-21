@@ -18,7 +18,7 @@
   --text-2:     #8b949e;
   --text-3:     #484f58;
 
-  --sidebar-w:  360px;
+  --sidebar-w:  380px;
   --radius:     6px;
   --radius-lg:  10px;
   --transition: 0.15s ease;
@@ -51,20 +51,17 @@ html, body {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 .sidebar-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 18px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
-  position: sticky;
-  top: 0;
-  z-index: 10;
+  flex-shrink: 0;
 }
 
 .logo {
@@ -94,11 +91,6 @@ html, body {
   white-space: nowrap;
 }
 
-.badge--disconnected { background: var(--surface-3); color: var(--text-2); }
-.badge--connecting   { background: #3d2e00; color: var(--warning); animation: pulse 1s infinite; }
-.badge--connected    { background: #0e3a1a; color: var(--success); }
-.badge--error        { background: var(--error-dim); color: var(--error); }
-
 .badge--ws           { background: var(--surface-3); color: var(--text-2); font-size: 11px; }
 .badge--ws.connected { background: #0e3a1a; color: var(--success); }
 .badge--ws.error     { background: var(--error-dim); color: var(--error); }
@@ -107,12 +99,8 @@ html, body {
 .panel {
   padding: 16px 18px;
   border-bottom: 1px solid var(--border);
-}
-
-.panel--tree {
-  flex: 1;
-  border-bottom: none;
-  min-height: 0;
+  flex-shrink: 0;
+  overflow-y: auto;
 }
 
 .panel-title {
@@ -122,26 +110,10 @@ html, body {
   letter-spacing: 0.6px;
   color: var(--text-2);
   margin-bottom: 14px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.tree-count {
-  font-size: 11px;
-  background: var(--accent-dim);
-  color: var(--accent);
-  padding: 1px 6px;
-  border-radius: 10px;
-  font-weight: 600;
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 /* ── 폼 ─────────────────────────────────────────────────────────────────── */
-.field {
-  margin-bottom: 10px;
-}
+.field { margin-bottom: 10px; }
 
 .field-label {
   display: block;
@@ -162,9 +134,7 @@ html, body {
   transition: border-color var(--transition);
 }
 
-.field-input:focus {
-  border-color: var(--accent);
-}
+.field-input:focus { border-color: var(--accent); }
 
 .field-input--mono {
   font-family: 'Cascadia Code', 'Fira Code', monospace;
@@ -204,11 +174,13 @@ html, body {
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn:not(:disabled):active { transform: scale(0.97); }
 
-.btn--primary { background: var(--accent); color: #fff; }
+.btn--primary   { background: var(--accent); color: #fff; }
 .btn--primary:not(:disabled):hover { background: #79c0ff; }
 
-.btn--danger  { background: var(--error); color: #fff; }
-.btn--danger:not(:disabled):hover  { background: #ff7b72; }
+.btn--secondary { background: var(--surface-3); color: var(--text-2); flex: none; }
+.btn--secondary:not(:disabled):hover { background: var(--border-2); color: var(--text); }
+
+.btn--sm { flex: none; padding: 5px 12px; font-size: 12px; }
 
 /* ── 에러 박스 ───────────────────────────────────────────────────────────── */
 .error-box {
@@ -223,17 +195,96 @@ html, body {
   word-break: break-word;
 }
 
-/* ── 노드 트리 ───────────────────────────────────────────────────────────── */
-.node-tree {
-  font-size: 12.5px;
+/* ── 서버 목록 (사이드바 스크롤 영역) ──────────────────────────────────── */
+.server-list {
+  flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ── 서버 섹션 ───────────────────────────────────────────────────────────── */
+.server-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.server-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  background: var(--surface-2);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.server-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+  box-shadow: 0 0 6px var(--success);
+}
+
+.server-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.server-id-label {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.5px;
+}
+
+.server-ep-label {
+  font-size: 11px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-server-disc {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+
+.btn-server-disc:hover {
+  background: var(--error-dim);
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* ── 노드 트리 (서버 섹션 내부) ─────────────────────────────────────────── */
+.server-tree-wrap {
+  padding: 6px 10px 10px;
+  font-size: 12.5px;
 }
 
 .placeholder {
   color: var(--text-3);
   font-size: 12px;
   text-align: center;
-  padding: 20px 0;
+  padding: 24px 0;
 }
 
 .tree-item {
@@ -267,10 +318,7 @@ html, body {
 
 .tree-toggle.open { transform: rotate(90deg); }
 
-.tree-icon {
-  font-size: 13px;
-  flex-shrink: 0;
-}
+.tree-icon { font-size: 13px; flex-shrink: 0; }
 
 .tree-name {
   color: var(--text);
@@ -287,7 +335,7 @@ html, body {
   background: var(--accent-dim);
   padding: 1px 6px;
   border-radius: 4px;
-  max-width: 100px;
+  max-width: 90px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -302,7 +350,6 @@ html, body {
 
 .tree-children.collapsed { display: none; }
 
-/* 클래스별 아이콘 색상 */
 .tree-item--Object   .tree-icon { color: #e3b341; }
 .tree-item--Variable .tree-icon { color: var(--accent); }
 .tree-item--Method   .tree-icon { color: var(--success); }
@@ -326,10 +373,7 @@ html, body {
   flex-shrink: 0;
 }
 
-.main-title {
-  font-size: 16px;
-  font-weight: 600;
-}
+.main-title { font-size: 16px; font-weight: 600; }
 
 .header-meta {
   display: flex;
@@ -337,10 +381,7 @@ html, body {
   gap: 12px;
 }
 
-.update-counter {
-  font-size: 12px;
-  color: var(--text-2);
-}
+.update-counter { font-size: 12px; color: var(--text-2); }
 
 /* ── 통계 카드 ───────────────────────────────────────────────────────────── */
 .stats-grid {
@@ -366,12 +407,7 @@ html, body {
   margin-bottom: 4px;
 }
 
-.stat-value {
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text);
-}
-
+.stat-value { font-size: 20px; font-weight: 700; color: var(--text); }
 .stat-value--sm { font-size: 13px; padding-top: 3px; }
 
 /* ── 데이터 테이블 ───────────────────────────────────────────────────────── */
@@ -421,17 +457,23 @@ html, body {
   padding: 40px !important;
 }
 
-/* 셀 스타일 */
-.cell-nodeid {
+/* ── 서버 엔드포인트 배지 (테이블 열) ───────────────────────────────────── */
+.ep-badge {
   font-family: 'Cascadia Code', 'Fira Code', monospace;
   font-size: 11px;
+  background: var(--surface-3);
   color: var(--text-2);
-  max-width: 220px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  display: inline-block;
+  border: 1px solid var(--border);
 }
 
+/* ── 셀 스타일 ───────────────────────────────────────────────────────────── */
 .cell-name { font-weight: 500; }
 
 .cell-value {
@@ -480,10 +522,7 @@ html, body {
   z-index: 100;
 }
 
-.overlay-text {
-  color: var(--text-2);
-  font-size: 14px;
-}
+.overlay-text { color: var(--text-2); font-size: 14px; }
 
 .spinner {
   width: 36px;
@@ -507,7 +546,7 @@ html, body {
 ::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
 
-/* ── 반응형 (좁은 화면) ─────────────────────────────────────────────────── */
+/* ── 반응형 ─────────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
 }

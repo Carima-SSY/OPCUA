@@ -1,20 +1,22 @@
 """
-OPC UA 연결 상태 관리자 (opc_state.py)
+OPC UA 다중 서버 연결 상태 관리자 (opc_state.py)
 
-FastAPI 앱 전역 OPC UA 연결 상태를 보관하고,
-데이터 변경 시 WebSocket 으로 브로드캐스트하는 구독 핸들러를 제공한다.
+다수의 OPC UA 서버 연결을 동시에 관리하고,
+각 서버의 DataChange 를 server_id 포함 WebSocket 메시지로 브로드캐스트한다.
 """
 
 import asyncio
 import logging
 import math
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from asyncua import Node, ua
 
 from opc.client import OPCClient
-from opc.config import SUBSCRIPTION_PERIOD_MS, AuthMode, SecurityMode
+from opc.config import SUBSCRIPTION_PERIOD_MS
 from web.ws.manager import manager as ws_manager
 
 logger = logging.getLogger(__name__)
@@ -31,26 +33,33 @@ _NODE_CLASS_LABEL = {
 
 class WebSubscriptionHandler:
     """
-    OPC UA 데이터 변경을 수신하여 캐시를 갱신하고 WebSocket 으로 브로드캐스트한다.
+    OPC UA DataChange 를 수신하여 캐시를 갱신하고 server_id 를 포함한
+    메시지를 WebSocket 으로 브로드캐스트한다.
 
-    asyncua 는 datachange_notification 을 이벤트 루프 내부 태스크에서 동기적으로 호출한다.
-    asyncio.ensure_future 로 브로드캐스트 코루틴을 루프에 예약한다.
+    asyncua 는 datachange_notification 을 이벤트 루프 내부 태스크에서
+    동기적으로 호출하므로, asyncio.ensure_future 로 브로드캐스트를 예약한다.
     """
 
-    def __init__(self, cache: dict[str, Any]):
+    def __init__(self, server_id: str, cache: dict[str, Any]):
+        self._server_id = server_id
         self._cache = cache
 
     def datachange_notification(self, node: Node, val, data):
         node_id = str(node.nodeid.Identifier)
         ts = datetime.now(timezone.utc).isoformat()
 
-        # float 특수값 정규화 (JSON 직렬화 불가)
         if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
             val = str(val)
 
         self._cache[node_id] = {"value": val, "timestamp": ts}
 
-        payload = {"type": "data_change", "node_id": node_id, "value": val, "timestamp": ts}
+        payload = {
+            "type":      "data_change",
+            "server_id": self._server_id,
+            "node_id":   node_id,
+            "value":     val,
+            "timestamp": ts,
+        }
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -62,105 +71,117 @@ class WebSubscriptionHandler:
         pass
 
     def status_change_notification(self, status):
-        logger.warning("[OPC SUBSCRIPTION] 상태 변경: %s", status)
+        logger.warning("[OPC %s] 상태 변경: %s", self._server_id, status)
         asyncio.ensure_future(
-            ws_manager.broadcast({"type": "status_change", "status": str(status)})
+            ws_manager.broadcast({
+                "type":      "status_change",
+                "server_id": self._server_id,
+                "status":    str(status),
+            })
         )
 
 
-# ── OPC UA 전역 상태 ──────────────────────────────────────────────────────────
+# ── 서버 세션 ─────────────────────────────────────────────────────────────────
 
-class OPCState:
+@dataclass
+class ServerSession:
+    """단일 OPC UA 서버 연결 세션이 보유하는 데이터."""
+    server_id:     str
+    endpoint:      str
+    client:        OPCClient
+    node_tree:     list = field(default_factory=list)
+    node_values:   dict = field(default_factory=dict)    # node_id → {value, timestamp}
+    node_name_map: dict = field(default_factory=dict)    # node_id → display name
+
+
+# ── 다중 서버 상태 ────────────────────────────────────────────────────────────
+
+class MultiServerState:
     """
-    FastAPI 앱 수명 동안 유지되는 OPC UA 연결 상태.
+    FastAPI 앱 수명 동안 유지되는 다중 OPC UA 서버 연결 상태 싱글턴.
 
-    connect() 호출 시 OPCClient 를 사용해 채널/인증을 설정하고,
-    노드 트리를 구성한 뒤 WebSubscriptionHandler 로 DataChange 구독을 시작한다.
+    connect() 호출마다 고유한 server_id 를 발급하여 세션을 독립적으로 관리한다.
+    동일 엔드포인트에 중복 연결도 허용하며, 각 세션은 완전히 독립된다.
     """
 
     def __init__(self):
-        self._client: OPCClient | None = None
+        self._sessions: dict[str, ServerSession] = {}
         self._lock = asyncio.Lock()
 
-        self.connected: bool = False
-        self.node_tree: list[dict] = []    # 프론트엔드 렌더링용 트리
-        self.node_values: dict[str, Any] = {}   # node_id → {value, timestamp}
-        self.node_name_map: dict[str, str] = {}  # node_id → display name
+    @property
+    def sessions(self) -> dict[str, ServerSession]:
+        return self._sessions
 
     # ── 공개 API ──────────────────────────────────────────────────────────────
 
     async def connect(self, config: dict) -> dict:
         """
-        OPC UA 서버에 연결하고 노드 트리를 구성한 뒤 DataChange 구독을 시작한다.
+        새 OPC UA 서버에 연결하고 노드 트리를 구성한 뒤 DataChange 구독을 시작한다.
 
         Returns:
-            {"node_count": int, "tree": list}
+            {"server_id": str, "node_count": int, "tree": list}
         """
         async with self._lock:
-            if self.connected:
-                await self._do_disconnect()
-
-            self.node_values = {}
-            self.node_name_map = {}
+            server_id = str(uuid.uuid4())[:8]
 
             opc = OPCClient(**config)
             await opc.connect()
 
-            # Objects 루트에서 트리를 구성하고 Variable 노드를 수집한다
+            session = ServerSession(
+                server_id=server_id,
+                endpoint=config["endpoint"],
+                client=opc,
+            )
+
             root = opc._client.nodes.objects
             var_nodes: list[Node] = []
             visited: set[str] = set()
-            tree_root = await self._build_tree(root, var_nodes, visited)
+            tree_root = await self._build_tree(root, var_nodes, visited, session)
+            session.node_tree = tree_root.get("children", [])
 
-            self.node_tree = tree_root.get("children", [])
-
-            # WebSocket 브로드캐스트 핸들러로 구독 생성
-            handler = WebSubscriptionHandler(self.node_values)
+            handler = WebSubscriptionHandler(server_id, session.node_values)
             sub = await opc._client.create_subscription(
                 period=SUBSCRIPTION_PERIOD_MS, handler=handler
             )
             await sub.subscribe_data_change(var_nodes)
             opc._subscription = sub
 
-            self._client = opc
-            self.connected = True
-            logger.info("[STATE] 연결 완료 — %d 개 Variable 노드 구독", len(var_nodes))
-            return {"node_count": len(var_nodes), "tree": self.node_tree}
+            self._sessions[server_id] = session
+            logger.info(
+                "[STATE] %s 연결 완료 (%s) — %d 개 노드",
+                server_id, config["endpoint"], len(var_nodes),
+            )
+            return {
+                "server_id":  server_id,
+                "node_count": len(var_nodes),
+                "tree":       session.node_tree,
+            }
 
-    async def disconnect(self) -> None:
+    async def disconnect(self, server_id: str) -> None:
+        """특정 서버 연결을 해제하고 세션을 제거한다."""
         async with self._lock:
-            await self._do_disconnect()
+            session = self._sessions.pop(server_id, None)
+            if session:
+                await session.client.disconnect()
+                logger.info("[STATE] %s 연결 해제", server_id)
 
-    async def _do_disconnect(self) -> None:
-        if self._client:
-            await self._client.disconnect()
-            self._client = None
-        self.connected = False
-        self.node_tree = []
-        self.node_values = {}
-        self.node_name_map = {}
-        logger.info("[STATE] 연결 해제")
+    async def disconnect_all(self) -> None:
+        """모든 서버 연결을 해제한다 (앱 종료 시 호출)."""
+        for server_id in list(self._sessions.keys()):
+            await self.disconnect(server_id)
 
     # ── 내부: 노드 트리 구성 ──────────────────────────────────────────────────
 
     async def _build_tree(
         self,
-        node: Node,
-        var_nodes: list[Node],
-        visited: set[str],
+        node:      Node,
+        var_nodes: list,
+        visited:   set,
+        session:   ServerSession,
     ) -> dict:
         """
         재귀적으로 노드 트리를 구성하고 Variable 노드를 var_nodes 에 수집한다.
-
-        반환 형식:
-          {
-            "node_id":      str,   # NodeId.Identifier (ex: "AMMachine.Status.State")
-            "node_id_full": str,   # 전체 NodeId 문자열 (ex: "ns=2;s=AMMachine.Status.State")
-            "name":         str,   # BrowseName
-            "class":        str,   # "Object" | "Variable" | ...
-            "value":        Any,   # Variable 의 초기값, Object 는 None
-            "children":     list,  # 자식 노드 목록
-          }
+        순환 참조 방지를 위해 visited 집합으로 이미 방문한 노드를 추적한다.
         """
         node_id_full = node.nodeid.to_string()
         if node_id_full in visited:
@@ -173,11 +194,15 @@ class OPCState:
         except Exception:
             return {}
 
-        node_id  = str(node.nodeid.Identifier)
-        name     = browse_name.Name
+        # Object / Variable 이외의 노드(Method, View 등)는 UI에 표시하지 않는다
+        if node_class not in (ua.NodeClass.Object, ua.NodeClass.Variable):
+            return {}
+
+        node_id   = str(node.nodeid.Identifier)
+        name      = browse_name.Name
         cls_label = _NODE_CLASS_LABEL.get(node_class, str(node_class))
 
-        entry: dict[str, Any] = {
+        entry: dict = {
             "node_id":      node_id,
             "node_id_full": node_id_full,
             "name":         name,
@@ -193,11 +218,9 @@ class OPCState:
                     val = str(val)
                 entry["value"] = val
                 var_nodes.append(node)
-                # 이름 맵 구성 (테이블 표시용)
-                self.node_name_map[node_id] = name
-                # 초기값 캐시
-                self.node_values[node_id] = {
-                    "value": val,
+                session.node_name_map[node_id] = name
+                session.node_values[node_id] = {
+                    "value":     val,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             except Exception:
@@ -205,7 +228,10 @@ class OPCState:
 
         try:
             for child in await node.get_children():
-                child_entry = await self._build_tree(child, var_nodes, visited)
+                # namespace 0 = OPC UA 표준 인프라 노드(Server 등) — 건너뜀
+                if child.nodeid.NamespaceIndex == 0:
+                    continue
+                child_entry = await self._build_tree(child, var_nodes, visited, session)
                 if child_entry:
                     entry["children"].append(child_entry)
         except Exception:
@@ -215,4 +241,4 @@ class OPCState:
 
 
 # 앱 전역 싱글턴
-opc_state = OPCState()
+opc_state = MultiServerState()
