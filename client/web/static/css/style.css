@@ -1,24 +1,24 @@
-/* ── CSS 변수 (다크 테마) ─────────────────────────────────────────────────── */
+/* ── CSS 변수 (라이트 테마) ─────────────────────────────────────────────────── */
 :root {
-  --bg:         #0d1117;
-  --surface:    #161b22;
-  --surface-2:  #21262d;
-  --surface-3:  #2d333b;
-  --border:     #30363d;
-  --border-2:   #444c56;
+  --bg:         #f6f8fa;
+  --surface:    #ffffff;
+  --surface-2:  #f0f2f5;
+  --surface-3:  #e4e8ed;
+  --border:     #d0d7de;
+  --border-2:   #bac0c8;
 
-  --accent:     #58a6ff;
-  --accent-dim: #1f4076;
-  --success:    #3fb950;
-  --success-dim:#0e3a1a;
-  --warning:    #d29922;
-  --warning-dim:#3a2a00;
-  --error:      #f85149;
-  --error-dim:  #4a1a19;
+  --accent:     #3897F0;
+  --accent-dim: #e8f3fe;
+  --success:    #1a7f37;
+  --success-dim:#dafbe1;
+  --warning:    #9a6700;
+  --warning-dim:#fff8c5;
+  --error:      #cf222e;
+  --error-dim:  #ffebe9;
 
-  --text:       #e6edf3;
-  --text-2:     #8b949e;
-  --text-3:     #484f58;
+  --text:       #1f2328;
+  --text-2:     #636c76;
+  --text-3:     #818b98;
 
   --header-h:   54px;
   --radius:     6px;
@@ -44,8 +44,8 @@ html, body {
   position: fixed;
   top: 0; left: 0; right: 0;
   height: var(--header-h);
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  background: #3897F0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -59,8 +59,8 @@ html, body {
   gap: 8px;
 }
 
-.logo-icon { font-size: 20px; color: var(--accent); }
-.logo-text  { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; }
+.logo-icon { font-size: 20px; color: #fff; }
+.logo-text  { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; color: #fff; }
 
 .header-actions {
   display: flex;
@@ -144,7 +144,7 @@ html, body {
 .device-card:hover {
   border-color: var(--accent);
   transform: translateY(-2px);
-  box-shadow: 0 4px 20px rgba(88, 166, 255, 0.12);
+  box-shadow: 0 4px 20px rgba(56, 151, 240, 0.2);
 }
 
 .card-header {
@@ -447,7 +447,7 @@ html, body {
 }
 
 .detail-field-value.flash {
-  color: #ffe366;
+  color: #e65c00;
 }
 
 /* ── 배지 ───────────────────────────────────────────────────────────────── */
@@ -462,6 +462,14 @@ html, body {
 .badge--ws           { background: var(--surface-3); color: var(--text-2); }
 .badge--ws.connected { background: var(--success-dim); color: var(--success); }
 .badge--ws.error     { background: var(--error-dim); color: var(--error); }
+
+/* ── 헤더(파란 배경) 내 배지·버튼 오버라이드 ───────────────────────────────── */
+.app-header .badge--ws           { background: rgba(255,255,255,0.22); color: #fff; }
+.app-header .badge--ws.connected { background: rgba(255,255,255,0.28); color: #fff; }
+.app-header .badge--ws.error     { background: rgba(220, 53, 69, 0.4); color: #fff; }
+
+.app-header .btn--primary        { background: #fff; color: #3897F0; }
+.app-header .btn--primary:not(:disabled):hover { background: rgba(255,255,255,0.88); }
 
 /* ── 버튼 ───────────────────────────────────────────────────────────────── */
 .btn {
@@ -479,7 +487,7 @@ html, body {
 .btn:not(:disabled):active { transform: scale(0.97); }
 
 .btn--primary   { background: var(--accent); color: #fff; }
-.btn--primary:not(:disabled):hover { background: #79c0ff; }
+.btn--primary:not(:disabled):hover { background: #2b88e0; }
 
 .btn--secondary { background: var(--surface-3); color: var(--text-2); }
 .btn--secondary:not(:disabled):hover { background: var(--border-2); color: var(--text); }
@@ -566,7 +574,7 @@ html, body {
 .modal-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(13, 17, 23, 0.7);
+  background: rgba(0, 0, 0, 0.3);
   backdrop-filter: blur(4px);
 }
 
@@ -579,7 +587,7 @@ html, body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.12);
 }
 
 .modal-header {
@@ -618,7 +626,7 @@ html, body {
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(13, 17, 23, 0.75);
+  background: rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(4px);
   display: flex;
   flex-direction: column;
